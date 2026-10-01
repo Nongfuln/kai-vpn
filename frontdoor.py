@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """前门服务(监听 $PORT):
-- GET /          -> 健康检查 200 (Render 用它判断服务存活)
+- GET /          -> 健康检查 200 (平台用它判断服务存活)
 - GET $SUB_PATH  -> 订阅接口, 返回 base64 的 vless 节点
 - WS 握手到 $WS_PATH -> 透传给本地 xray (127.0.0.1:10001)
 """
@@ -14,20 +14,26 @@ PORT = int(os.environ.get("PORT", "10000"))
 UUID = os.environ["UUID"]
 WS_PATH = os.environ["WS_PATH"]
 SUB_PATH = os.environ.get("SUB_PATH", "/sub")
-HOST = os.environ.get("RENDER_EXTERNAL_HOSTNAME", "localhost")
+HOST = (
+    os.environ.get("PUBLIC_HOST")
+    or os.environ.get("KOYEB_PUBLIC_DOMAIN")
+    or os.environ.get("RENDER_EXTERNAL_HOSTNAME")
+    or "localhost"
+)
 XRAY_HOST, XRAY_PORT = "127.0.0.1", 10001
 
 
-def vless_link():
+def vless_link(host):
+    host = host.split(":")[0]  # 去掉 Host 头里可能带的端口
     return (
-        f"vless://{UUID}@{HOST}:443?encryption=none&security=tls"
-        f"&sni={HOST}&type=ws&host={HOST}&path={quote(WS_PATH, safe='')}"
-        "#Kai-Render"
+        f"vless://{UUID}@{host}:443?encryption=none&security=tls"
+        f"&sni={host}&type=ws&host={host}&path={quote(WS_PATH, safe='')}"
+        "#Kai"
     )
 
 
-def subscription():
-    return base64.b64encode(vless_link().encode()).decode()
+def subscription(host):
+    return base64.b64encode(vless_link(host).encode()).decode()
 
 
 def send_simple(conn, code, body, ctype="text/plain; charset=utf-8"):
@@ -108,7 +114,8 @@ def handle_client(conn):
             body = b"Kai VPN running" if method == "GET" else b""
             send_simple(conn, "200 OK", body)
         elif path == SUB_PATH and method == "GET":
-            send_simple(conn, "200 OK", subscription().encode())
+            # 用请求 Host 头生成订阅链接, 换平台/换域名都不用改代码
+            send_simple(conn, "200 OK", subscription(headers.get("host", HOST)).encode())
         elif path == WS_PATH and headers.get("upgrade", "").lower() == "websocket":
             ws_handled = True
             handle_ws(conn, data)
